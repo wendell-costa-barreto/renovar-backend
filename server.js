@@ -70,7 +70,11 @@ app.post('/api/login', async (req, res) => {
     if (username !== process.env.ADMIN_USERNAME) return res.status(401).json({ error: 'Invalid credentials' });
 
     const valid = await bcrypt.compare(password, process.env.ADMIN_PASSWORD);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!valid) {
+      console.log('Login attempt:', username);
+      console.log('Password valid:', await bcrypt.compare(password, process.env.ADMIN_PASSWORD));
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     const token = jwt.sign({ username }, process.env.JWT_SECRET, { expiresIn: '1h' });
     res.json({ token });
