@@ -1,3 +1,10 @@
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+
 // server.js
 const express = require('express');
 const bcrypt = require('bcrypt');
@@ -137,8 +144,11 @@ app.post('/api/posts', authMiddleware, async (req, res) => {
 });
 
 // --- Update post ---
+// --- Update post ---
 app.put('/api/posts/:id', authMiddleware, upload.single('image'), async (req, res) => {
   try {
+    const supabase = supabaseClient(); // <--- important
+
     const postId = req.params.id;
     const { title, content, label, imagePosition } = req.body;
     let image = req.body.image; // fallback if not uploading
@@ -150,11 +160,18 @@ app.put('/api/posts/:id', authMiddleware, upload.single('image'), async (req, re
         contentType: req.file.mimetype,
       });
       if (uploadError) return res.status(500).json({ error: uploadError.message });
+
       const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(filename);
       image = publicUrl;
     }
 
-    const slug = title ? title.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') : undefined;
+    const slug = title
+      ? title.toLowerCase()
+             .replace(/[^a-z0-9 -]/g, '')
+             .replace(/\s+/g, '-')
+             .replace(/-+/g, '-')
+             .replace(/^-+|-+$/g, '')
+      : undefined;
 
     const updateData = {
       ...(title && { title }),
@@ -174,6 +191,7 @@ app.put('/api/posts/:id', authMiddleware, upload.single('image'), async (req, re
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // Delete post
 app.delete('/api/posts/:id', authMiddleware, async (req, res) => {
