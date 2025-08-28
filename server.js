@@ -121,26 +121,58 @@ app.get('/api/post/:identifier', async (req, res) => {
 // Create post
 app.post('/api/posts', authMiddleware, async (req, res) => {
   const { title, content, label, image } = req.body;
-  if (!title || !content || !label) return res.status(400).json({ error: 'Missing fields' });
+  if (!title || !content || !label)
+    return res.status(400).json({ error: 'Missing fields' });
 
-  const slug = generateSlug(title);
+  const slug = generateSlug(title) + '-' + Date.now();
+
   const supabase = supabaseClient();
-  const { data, error } = await supabase.from('posts').insert([{ title, content, label, slug, image }]).select();
+  const { data, error } = await supabase.from('posts').insert([
+    { title, content, label, slug, image: image || null }
+  ]).select();
 
   if (error) return res.status(500).json({ error: error.message });
+
   res.json(data[0]);
 });
 
-// Update post
-app.put('/api/posts/:id', authMiddleware, async (req, res) => {
-  const { title, content, label, image } = req.body;
-  const postId = req.params.id;
-  const slug = generateSlug(title);
-  const supabase = supabaseClient();
+// --- Update post ---
+app.put('/api/posts/:id', authMiddleware, upload.single('image'), async (req, res) => {
+  try {
+    const postId = req.params.id;
+    const { title, content, label, imagePosition } = req.body;
+    let image = req.body.image; // fallback if not uploading
 
-  const { error } = await supabase.from('posts').update({ title, content, label, slug, image, updated_at: new Date().toISOString() }).eq('id', postId);
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ success: true });
+    // Use uploaded file if present
+    if (req.file) {
+      const filename = `${Date.now()}-${req.file.originalname}`;
+      const { error: uploadError } = await supabase.storage.from('uploads').upload(filename, req.file.buffer, {
+        contentType: req.file.mimetype,
+      });
+      if (uploadError) return res.status(500).json({ error: uploadError.message });
+      const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(filename);
+      image = publicUrl;
+    }
+
+    const slug = title ? title.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') : undefined;
+
+    const updateData = {
+      ...(title && { title }),
+      ...(content && { content }),
+      ...(label && { label }),
+      ...(slug && { slug }),
+      ...(image && { image }),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase.from('posts').update(updateData).eq('id', postId).select();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, post: data[0] });
+  } catch (err) {
+    console.error("PUT /api/posts/:id error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // Delete post
