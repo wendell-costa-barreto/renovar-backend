@@ -3,6 +3,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 
 // Only load .env locally
@@ -10,15 +11,15 @@ if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
 
-console.log('=== ENVIRONMENT DEBUG ===');
-console.log('ADMIN_USERNAME:', process.env.ADMIN_USERNAME);
-console.log('ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING');
-console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'MISSING');
-console.log('SUPABASE_URL:', process.env.SUPABASE_URL);
-console.log('SUPABASE_SERVICE_ROLE:', process.env.SUPABASE_SERVICE_ROLE ? 'SET' : 'MISSING');
-console.log('========================');
+
 
 const app = express();
+
+app.use(cors({
+  origin: "https://renovar-ambientes.vercel.app", 
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  credentials: true,
+}));
 
 // Middleware
 app.use(express.json());
