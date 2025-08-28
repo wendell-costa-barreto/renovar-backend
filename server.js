@@ -1,35 +1,33 @@
-require('dotenv').config();
+// server.js
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 
-// console.log('=== ENVIRONMENT DEBUG ===');
-// console.log('ADMIN_USERNAME:', process.env.ADMIN_USERNAME);
-// console.log('ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING');
-// console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'MISSING');
-// console.log('SUPABASE_URL:', process.env.SUPABASE_URL);
-// console.log('SUPABASE_SERVICE_ROLE:', process.env.SUPABASE_SERVICE_ROLE ? 'SET' : 'MISSING');
-// console.log('========================');
+// Only load .env locally
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
+console.log('=== ENVIRONMENT DEBUG ===');
+console.log('ADMIN_USERNAME:', process.env.ADMIN_USERNAME);
+console.log('ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING');
+console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'MISSING');
+console.log('SUPABASE_URL:', process.env.SUPABASE_URL);
+console.log('SUPABASE_SERVICE_ROLE:', process.env.SUPABASE_SERVICE_ROLE ? 'SET' : 'MISSING');
+console.log('========================');
 
 const app = express();
 
-// --- Supabase setup ---
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE // server-side key
-);
-
-// --- Middleware ---
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- Auth middleware ---
+// Auth middleware
 function authMiddleware(req, res, next) {
   const authHeader = req.headers['authorization'];
   if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-
   const token = authHeader.split(' ')[1];
   try {
     jwt.verify(token, process.env.JWT_SECRET);
@@ -39,7 +37,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// --- Helper: slug generation ---
+// Helper: slug
 function generateSlug(title) {
   return title
     .toLowerCase()
@@ -49,14 +47,20 @@ function generateSlug(title) {
     .replace(/^-+|-+$/g, '');
 }
 
-// --- Multer (for in-memory uploads) ---
+// Multer memory storage
 const upload = multer({ storage: multer.memoryStorage() });
 
-/* =============================
-   ROUTES
-   ============================= */
+// Initialize Supabase client safely at runtime
+function supabaseClient() {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
+    throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE not set');
+  }
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+}
 
-// --- Auth ---
+/* ================= ROUTES ================= */
+
+// Login
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -73,29 +77,33 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- Upload image ---
+// Upload image
 app.post('/api/upload', authMiddleware, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+  const supabase = supabaseClient();
   const filename = `${Date.now()}-${req.file.originalname}`;
   const { error } = await supabase.storage.from('uploads').upload(filename, req.file.buffer, {
     contentType: req.file.mimetype,
   });
+
   if (error) return res.status(500).json({ error: error.message });
 
   const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(filename);
   res.json({ url: publicUrl });
 });
 
-// --- Get all posts ---
+// Get all posts
 app.get('/api/posts', async (req, res) => {
+  const supabase = supabaseClient();
   const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// --- Get single post by ID or slug ---
+// Get single post by id or slug
 app.get('/api/post/:identifier', async (req, res) => {
+  const supabase = supabaseClient();
   const identifier = req.params.identifier;
   let query;
 
@@ -110,39 +118,35 @@ app.get('/api/post/:identifier', async (req, res) => {
   res.json(data);
 });
 
-// --- Create post ---
+// Create post
 app.post('/api/posts', authMiddleware, async (req, res) => {
   const { title, content, label, image } = req.body;
   if (!title || !content || !label) return res.status(400).json({ error: 'Missing fields' });
 
   const slug = generateSlug(title);
-
-  const { data, error } = await supabase.from('posts').insert([
-    { title, content, label, slug, image }
-  ]).select();
+  const supabase = supabaseClient();
+  const { data, error } = await supabase.from('posts').insert([{ title, content, label, slug, image }]).select();
 
   if (error) return res.status(500).json({ error: error.message });
   res.json(data[0]);
 });
 
-// --- Update post ---
+// Update post
 app.put('/api/posts/:id', authMiddleware, async (req, res) => {
   const { title, content, label, image } = req.body;
   const postId = req.params.id;
-
   const slug = generateSlug(title);
+  const supabase = supabaseClient();
 
-  const { error } = await supabase.from('posts')
-    .update({ title, content, label, slug, image, updated_at: new Date().toISOString() })
-    .eq('id', postId);
-
+  const { error } = await supabase.from('posts').update({ title, content, label, slug, image, updated_at: new Date().toISOString() }).eq('id', postId);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
-// --- Delete post ---
+// Delete post
 app.delete('/api/posts/:id', authMiddleware, async (req, res) => {
   const postId = req.params.id;
+  const supabase = supabaseClient();
 
   const { data, error } = await supabase.from('posts').delete().eq('id', postId).select();
   if (error) return res.status(500).json({ error: error.message });
@@ -150,7 +154,5 @@ app.delete('/api/posts/:id', authMiddleware, async (req, res) => {
   res.json({ success: true, post: data[0] });
 });
 
-/* =============================
-   EXPORT FOR VERCEL
-   ============================= */
+/* ================= EXPORT FOR VERCEL ================= */
 module.exports = app;
