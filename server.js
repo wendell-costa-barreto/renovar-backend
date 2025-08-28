@@ -1,10 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-
 // server.js
 const express = require('express');
 const bcrypt = require('bcrypt');
@@ -59,6 +52,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Initialize Supabase client safely at runtime
 function supabaseClient() {
+  console.log('Supabase URL:', !!process.env.SUPABASE_URL, 'Service Role:', !!process.env.SUPABASE_SERVICE_ROLE);
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
     throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE not set');
   }
