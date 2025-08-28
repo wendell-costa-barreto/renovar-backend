@@ -1,19 +1,45 @@
 require('dotenv').config();
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const app = express();
-const PORT = process.env.PORT || 3000;
-const POSTS_FILE = path.join(__dirname, 'posts.json');
+const { createClient } = require('@supabase/supabase-js');
 
-// Middleware
+// console.log('=== ENVIRONMENT DEBUG ===');
+// console.log('ADMIN_USERNAME:', process.env.ADMIN_USERNAME);
+// console.log('ADMIN_PASSWORD:', process.env.ADMIN_PASSWORD ? 'SET' : 'MISSING');
+// console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'MISSING');
+// console.log('SUPABASE_URL:', process.env.SUPABASE_URL);
+// console.log('SUPABASE_SERVICE_ROLE:', process.env.SUPABASE_SERVICE_ROLE ? 'SET' : 'MISSING');
+// console.log('========================');
+
+const app = express();
+
+// --- Supabase setup ---
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE // server-side key
+);
+
+// --- Middleware ---
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Helper: slug generation
+// --- Auth middleware ---
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
+
+  const token = authHeader.split(' ')[1];
+  try {
+    jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    res.status(403).json({ error: 'Invalid token' });
+  }
+}
+
+// --- Helper: slug generation ---
 function generateSlug(title) {
   return title
     .toLowerCase()
@@ -23,23 +49,16 @@ function generateSlug(title) {
     .replace(/^-+|-+$/g, '');
 }
 
-// ----------- IMAGE UPLOAD -----------
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
-});
-const upload = multer({ storage });
-app.post('/api/upload', authMiddleware, upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  res.json({ url: `/uploads/${req.file.filename}` });
-});
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// --- Multer (for in-memory uploads) ---
+const upload = multer({ storage: multer.memoryStorage() });
 
-// ----------- AUTH ROUTE -----------
+/* =============================
+   ROUTES
+   ============================= */
+
+// --- Auth ---
 app.post('/api/login', async (req, res) => {
   try {
-     console.log('Login attempt:', req.body);
-  console.log('ENV:', process.env.ADMIN_USERNAME, process.env.ADMIN_PASSWORD, process.env.JWT_SECRET);
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
     if (username !== process.env.ADMIN_USERNAME) return res.status(401).json({ error: 'Invalid credentials' });
@@ -54,138 +73,84 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ----------- POSTS ROUTES -----------
-app.get('/api/posts', (req, res) => {
-  fs.readFile(POSTS_FILE, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: 'Cannot read posts' });
-    try {
-      res.json(JSON.parse(data));
-    } catch {
-      res.status(500).json({ error: 'Invalid posts data' });
-    }
+// --- Upload image ---
+app.post('/api/upload', authMiddleware, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const filename = `${Date.now()}-${req.file.originalname}`;
+  const { error } = await supabase.storage.from('uploads').upload(filename, req.file.buffer, {
+    contentType: req.file.mimetype,
   });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(filename);
+  res.json({ url: publicUrl });
 });
 
+// --- Get all posts ---
+app.get('/api/posts', async (req, res) => {
+  const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
 
-app.get('/api/post/:identifier', (req, res) => {
+// --- Get single post by ID or slug ---
+app.get('/api/post/:identifier', async (req, res) => {
   const identifier = req.params.identifier;
-  fs.readFile(POSTS_FILE, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: 'Cannot read posts' });
-    try {
-      const posts = JSON.parse(data);
-      let post = null;
-      if (!isNaN(identifier)) post = posts.find(p => p.id === parseInt(identifier));
-      if (!post) post = posts.find(p => p.slug === identifier);
-      if (!post) post = posts.find(p => generateSlug(p.title) === identifier);
-      if (!post) return res.status(404).json({ error: 'Post not found' });
-      res.json(post);
-    } catch {
-      res.status(500).json({ error: 'Invalid posts data' });
-    }
-  });
-});
+  let query;
 
-// Auth middleware
-function authMiddleware(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-  const token = authHeader.split(' ')[1];
-  try {
-    jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(403).json({ error: 'Invalid token' });
-  }
-}
-
-// Create post
-app.post('/api/posts', authMiddleware, upload.single('image'), (req, res) => {
-  const { title, content, label } = req.body;
-  if (!title || !content || !label) {
-    return res.status(400).json({ error: 'Title, content, and label required' });
+  if (!isNaN(identifier)) {
+    query = supabase.from('posts').select('*').eq('id', identifier).single();
+  } else {
+    query = supabase.from('posts').select('*').eq('slug', identifier).single();
   }
 
-  fs.readFile(POSTS_FILE, 'utf8', (err, data) => {
-    let posts = [];
-    if (!err) {
-      try { posts = JSON.parse(data); } catch {}
-    }
-
-    const newPost = {
-      id: Date.now(),
-      title,
-      content,
-      label,
-      slug: generateSlug(title),
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      createdAt: new Date().toISOString(),
-image: req.file ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}` : null
-    };
-
-    posts.push(newPost);
-
-    fs.writeFile(POSTS_FILE, JSON.stringify(posts, null, 2), writeErr => {
-      if (writeErr) return res.status(500).json({ error: 'Cannot save post' });
-      res.json({ success: true, id: newPost.id, slug: newPost.slug });
-    });
-  });
+  const { data, error } = await query;
+  if (error || !data) return res.status(404).json({ error: 'Post not found' });
+  res.json(data);
 });
 
+// --- Create post ---
+app.post('/api/posts', authMiddleware, async (req, res) => {
+  const { title, content, label, image } = req.body;
+  if (!title || !content || !label) return res.status(400).json({ error: 'Missing fields' });
 
+  const slug = generateSlug(title);
 
-app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
+  const { data, error } = await supabase.from('posts').insert([
+    { title, content, label, slug, image }
+  ]).select();
 
-// Update post
-app.put('/api/posts/:id', authMiddleware, (req, res) => {
-  const postId = parseInt(req.params.id);
-  const { title, content, label } = req.body;
-  if (!title || !content || !label) return res.status(400).json({ error: 'Title, content, and label required' });
-
-  fs.readFile(POSTS_FILE, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: 'Cannot read posts' });
-    let posts = [];
-    try { posts = JSON.parse(data); } catch { return res.status(500).json({ error: 'Invalid posts data' }); }
-
-    const index = posts.findIndex(p => p.id === postId);
-    if (index === -1) return res.status(404).json({ error: 'Post not found' });
-
-    posts[index] = { ...posts[index], title, content, label, slug: generateSlug(title), updated: new Date().toISOString() };
-    fs.writeFile(POSTS_FILE, JSON.stringify(posts, null, 2), writeErr => {
-      if (writeErr) return res.status(500).json({ error: 'Cannot save post' });
-      res.json({ success: true });
-    });
-  });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data[0]);
 });
 
-// Delete post
-app.delete('/api/posts/:id', authMiddleware, (req, res) => {
-  const postId = parseInt(req.params.id);
-  fs.readFile(POSTS_FILE, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: 'Cannot read posts' });
-    let posts = [];
-    try { posts = JSON.parse(data); } catch { return res.status(500).json({ error: 'Invalid posts data' }); }
+// --- Update post ---
+app.put('/api/posts/:id', authMiddleware, async (req, res) => {
+  const { title, content, label, image } = req.body;
+  const postId = req.params.id;
 
-    const index = posts.findIndex(p => p.id === postId);
-    if (index === -1) return res.status(404).json({ error: 'Post not found' });
+  const slug = generateSlug(title);
 
-    const deletedPost = posts.splice(index, 1)[0];
-    fs.writeFile(POSTS_FILE, JSON.stringify(posts, null, 2), writeErr => {
-      if (writeErr) return res.status(500).json({ error: 'Cannot save posts' });
-      res.json({ success: true, post: deletedPost });
-    });
-  });
+  const { error } = await supabase.from('posts')
+    .update({ title, content, label, slug, image, updated_at: new Date().toISOString() })
+    .eq('id', postId);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
+// --- Delete post ---
+app.delete('/api/posts/:id', authMiddleware, async (req, res) => {
+  const postId = req.params.id;
 
+  const { data, error } = await supabase.from('posts').delete().eq('id', postId).select();
+  if (error) return res.status(500).json({ error: error.message });
 
-// ----------- STATIC FILES -----------
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.static('build'));
-
-// ----------- START SERVER -----------
-app.listen(PORT, () => {
-  console.log(`✅ Server running at http://localhost:${PORT}`);
-
-  if (!fs.existsSync(POSTS_FILE)) fs.writeFileSync(POSTS_FILE, JSON.stringify([], null, 2));
-  if (!fs.existsSync(path.join(__dirname, 'uploads'))) fs.mkdirSync(path.join(__dirname, 'uploads'));
+  res.json({ success: true, post: data[0] });
 });
+
+/* =============================
+   EXPORT FOR VERCEL
+   ============================= */
+module.exports = app;
