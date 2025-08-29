@@ -16,7 +16,10 @@ if (process.env.NODE_ENV !== 'production') {
 const app = express();
 
 app.use(cors({
-  origin: "https://renovar-ambientes.vercel.app", 
+  origin: [
+    "https://renovar-ambientes.vercel.app",
+    "https://projeto-renovar-ambientes.vercel.app"
+  ],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true,
 }));
@@ -71,8 +74,7 @@ app.post('/api/login', async (req, res) => {
 
     const valid = await bcrypt.compare(password, process.env.ADMIN_PASSWORD);
     if (!valid) {
-      console.log('Login attempt:', username);
-      console.log('Password valid:', await bcrypt.compare(password, process.env.ADMIN_PASSWORD));
+     
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
